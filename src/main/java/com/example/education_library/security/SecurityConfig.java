@@ -112,10 +112,26 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOriginPatterns(new ArrayList<>(appProperties.getCors().getAllowedOrigins()));
-        configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"));
+        
+        // Combine configured origins with some defaults for safety
+        List<String> allowedOrigins = new ArrayList<>(appProperties.getCors().getAllowedOrigins());
+        
+        // Add common variations of the Vercel URL if present in the base list
+        List<String> variations = new ArrayList<>();
+        for (String origin : allowedOrigins) {
+            if (origin.endsWith("/")) {
+                variations.add(origin.substring(0, origin.length() - 1));
+            } else {
+                variations.add(origin + "/");
+            }
+        }
+        allowedOrigins.addAll(variations);
+        
+        configuration.setAllowedOriginPatterns(allowedOrigins);
+        configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"));
         configuration.setAllowedHeaders(Arrays.asList("*"));
         configuration.setAllowCredentials(true);
+        configuration.setMaxAge(3600L);
         
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);
