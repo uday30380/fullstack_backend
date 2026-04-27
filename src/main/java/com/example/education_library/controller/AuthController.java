@@ -5,6 +5,11 @@ import com.example.education_library.dto.AuthRequest;
 import com.example.education_library.dto.AuthResponse;
 import com.example.education_library.dto.RegistrationRequest;
 import com.example.education_library.dto.UserDTO;
+import com.example.education_library.dto.ForgotPasswordRequest;
+import com.example.education_library.dto.ResetPasswordRequest;
+import com.example.education_library.dto.VerifyEmailRequest;
+import com.example.education_library.dto.JoinFacultyRequest;
+
 import com.example.education_library.model.User;
 import com.example.education_library.repository.UserRepository;
 import com.example.education_library.security.JwtUtil;
