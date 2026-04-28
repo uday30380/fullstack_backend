@@ -53,7 +53,7 @@ public class SecurityConfig {
                     "/v3/api-docs/swagger-config"
                 ).permitAll()
                 .requestMatchers(HttpMethod.GET, "/health").permitAll()
-                .requestMatchers(HttpMethod.GET, "/api/resources", "/api/resources/featured", "/api/resources/files/**", "/api/resources/*").permitAll()
+                .requestMatchers(HttpMethod.GET, "/api/resources", "/api/resources/featured", "/api/resources/files/**", "/api/resources/*", "/api/resources/*/download", "/api/resources/download/*").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/feedback/resource/**").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/inquiries").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/admin/dashboard/recent-users", "/api/admin/dashboard/recent-feedback").hasRole("ADMIN")

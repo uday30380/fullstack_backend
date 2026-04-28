@@ -25,6 +25,9 @@ public class DataInitializer implements CommandLineRunner {
     private ResourceRepository resourceRepository;
 
     @Autowired
+    private FileStorageService fileStorageService;
+
+    @Autowired
     private PasswordEncoder passwordEncoder;
 
     @Override
@@ -33,6 +36,7 @@ public class DataInitializer implements CommandLineRunner {
         
         initializeUsers();
         initializeResources();
+        repairMetadataOnlyResources();
         
         logger.info("DataInitializer: Scholastic data ledger synchronization complete.");
     }
@@ -108,7 +112,59 @@ public class DataInitializer implements CommandLineRunner {
         resource.setIsFeatured(isFeatured);
         resource.setFeaturedOrder(isFeatured ? 1 : 0);
         resource.setUploadDate(LocalDateTime.now());
+        attachGeneratedResourceFile(resource);
         
         resourceRepository.save(resource);
+    }
+
+    private void repairMetadataOnlyResources() {
+        resourceRepository.findAll().stream()
+                .filter(resource -> resource.getResourcePath() == null || resource.getResourcePath().isBlank())
+                .filter(resource -> resource.getYoutubeUrl() == null || resource.getYoutubeUrl().isBlank())
+                .forEach(resource -> {
+                    attachGeneratedResourceFile(resource);
+                    resourceRepository.save(resource);
+                    logger.info("DataInitializer: Attached generated download file for resource '{}'.", resource.getTitle());
+                });
+    }
+
+    private void attachGeneratedResourceFile(Resource resource) {
+        String slug = slugify(resource.getTitle());
+        String relativePath = "generated/" + slug + ".txt";
+        String content = """
+                %s
+
+                Subject: %s
+                Department: %s
+                Type: %s
+
+                %s
+
+                This generated file keeps seeded and metadata-only resources downloadable.
+                Replace it by uploading the real PDF, notes, or video from the admin resource panel.
+                """.formatted(
+                nullToText(resource.getTitle(), "Education Library Resource"),
+                nullToText(resource.getSubject(), "General"),
+                nullToText(resource.getDepartment(), "General"),
+                nullToText(resource.getType(), "Notes"),
+                nullToText(resource.getDescription(), "No description available."));
+
+        String storedPath = fileStorageService.storeTextFile(relativePath, content);
+        resource.setResourcePath(storedPath);
+        resource.setSize((fileStorageService.fileSize(storedPath) / 1024 + 1) + " KB");
+        if (resource.getType() == null || resource.getType().isBlank() || "PDF".equalsIgnoreCase(resource.getType())) {
+            resource.setType("Notes");
+        }
+    }
+
+    private String slugify(String value) {
+        String slug = value == null ? "resource" : value.toLowerCase()
+                .replaceAll("[^a-z0-9]+", "-")
+                .replaceAll("(^-|-$)", "");
+        return slug.isBlank() ? "resource" : slug;
+    }
+
+    private String nullToText(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
     }
 }

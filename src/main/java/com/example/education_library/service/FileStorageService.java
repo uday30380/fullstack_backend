@@ -10,6 +10,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.net.MalformedURLException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -73,6 +74,26 @@ public class FileStorageService {
             throw new RuntimeException("Could not read file " + relativePath);
         } catch (MalformedURLException e) {
             throw new RuntimeException("Could not read file " + relativePath, e);
+        }
+    }
+
+    public String storeTextFile(String relativePath, String content) {
+        try {
+            String normalized = normalizeRelativePath(relativePath);
+            Path targetLocation = resolve(normalized);
+            Files.createDirectories(targetLocation.getParent());
+            Files.writeString(targetLocation, content == null ? "" : content, StandardCharsets.UTF_8);
+            return normalized;
+        } catch (IOException e) {
+            throw new RuntimeException("Could not store generated file " + relativePath, e);
+        }
+    }
+
+    public long fileSize(String relativePath) {
+        try {
+            return Files.size(resolve(relativePath));
+        } catch (IOException e) {
+            return 0L;
         }
     }
 

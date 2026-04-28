@@ -177,6 +177,22 @@ public class ResourceController {
         return ResponseEntity.ok().build();
     }
 
+    @GetMapping({"/{id}/download", "/download/{id}"})
+    @Operation(summary = "Download a resource file by resource ID", operationId = "downloadResourceById")
+    public ResponseEntity<Resource> downloadResourceById(@PathVariable Long id) {
+        Optional<com.example.education_library.model.Resource> resourceOpt = resourceRepository.findById(id);
+        if (resourceOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        com.example.education_library.model.Resource resource = resourceOpt.get();
+        if (resource.getResourcePath() == null || resource.getResourcePath().isBlank()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        }
+
+        return serveStoredFile(resource.getResourcePath(), true, resource.getTitle());
+    }
+
     @Hidden
     @GetMapping("/files/**")
     @Operation(summary = "Serve resource file (PDF, Notes, etc.) including subdirectories", operationId = "serveResourceFile")
@@ -189,26 +205,36 @@ public class ResourceController {
             // Extract the full path after /api/resources/files/
             String path = (String) request.getAttribute(org.springframework.web.servlet.HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE);
             String filename = path.substring(path.indexOf("/files/") + 7);
-            
-            String cleanPath = filename.startsWith("/") ? filename.substring(1) : filename;
-            Resource resource = fileStorageService.loadAsResource(cleanPath);
-            
+
+            String cleanPath = UriUtils.decode(filename.startsWith("/") ? filename.substring(1) : filename, StandardCharsets.UTF_8);
+            return serveStoredFile(cleanPath, download, name);
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    private ResponseEntity<Resource> serveStoredFile(String relativePath, boolean download, String requestedName) {
+        try {
+            Resource resource = fileStorageService.loadAsResource(relativePath);
+
             if (!resource.exists() || !resource.isReadable()) {
                 return ResponseEntity.notFound().build();
             }
 
-            Path resolvedPath = fileStorageService.resolve(cleanPath);
+            Path resolvedPath = fileStorageService.resolve(relativePath);
             String contentType = Files.probeContentType(resolvedPath);
             if (contentType == null) {
                 contentType = MediaType.APPLICATION_OCTET_STREAM_VALUE;
             }
 
-            String dispositionName = buildDownloadFilename(name, resource.getFilename());
+            String dispositionName = buildDownloadFilename(requestedName, resource.getFilename());
 
             return ResponseEntity.ok()
                     .contentType(MediaType.parseMediaType(contentType))
                     .header(HttpHeaders.CONTENT_DISPOSITION, (download ? "attachment" : "inline") + "; filename=\"" + dispositionName + "\"")
                     .body(resource);
+        } catch (RuntimeException e) {
+            return ResponseEntity.notFound().build();
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }

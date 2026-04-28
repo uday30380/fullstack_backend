@@ -69,7 +69,6 @@ public class AuthController {
                 return ResponseEntity.badRequest().body(new AuthResponse("Institutional email is required.", null));
             }
 
-            // Check if user already exists and is Active (fully registered)
             java.util.Optional<User> existingOpt = userRepository.findByEmailIgnoreCase(normalizedEmail);
             if (existingOpt.isPresent()) {
                 User existing = existingOpt.get();
@@ -77,14 +76,13 @@ public class AuthController {
                     System.out.println("ALERT: Duplicate Identity detected for " + normalizedEmail);
                     return ResponseEntity.status(409).body(new AuthResponse("A scholar with this email already exists in the central repository.", null));
                 }
-                // If Pending, re-send a fresh OTP and update expiry
-                String otp = String.format("%06d", new Random().nextInt(1000000));
-                existing.setEmailVerificationCode(otp);
-                existing.setEmailVerificationCodeExpiry(LocalDateTime.now().plusMinutes(30));
-                userRepository.save(existing);
-                emailService.sendEmailVerificationCode(normalizedEmail, otp);
-                System.out.println("Re-dispatched OTP to pending identity: " + normalizedEmail);
-                return ResponseEntity.ok(new AuthResponse("Identity node staged. Please finalize verification via institutional code.", null));
+                return ResponseEntity.status(403)
+                        .body(new AuthResponse("Your account exists but is pending administrative approval.", null));
+            }
+
+            if ("Admin".equalsIgnoreCase(request.getRole())
+                    && !appProperties.getSecurity().getAdminSecret().equals(request.getSecretCode())) {
+                return ResponseEntity.status(401).body(new AuthResponse("Invalid administrator secret code.", null));
             }
 
             if ("Faculty".equalsIgnoreCase(request.getRole())) {
@@ -96,26 +94,32 @@ public class AuthController {
                 }
             }
 
-            // Generate OTP
-            String otp = String.format("%06d", new Random().nextInt(1000000));
-            LocalDateTime expiry = LocalDateTime.now().plusMinutes(30);
-
-            // Persist user to DB immediately with status=Pending and OTP stored in DB
             User user = modelMapper.map(request, User.class);
             user.setEmail(normalizedEmail);
             user.setPassword(passwordEncoder.encode(request.getPassword()));
-            user.setStatus("Pending");
-            user.setEmailVerificationCode(otp);
-            user.setEmailVerificationCodeExpiry(expiry);
+            user.setEmailVerificationCode(null);
+            user.setEmailVerificationCodeExpiry(null);
             if ("Faculty".equalsIgnoreCase(request.getRole()) && request.getFacultyPin() != null) {
                 user.setFacultyPin(request.getFacultyPin().trim());
+                user.setStatus("Pending");
+            } else {
+                user.setStatus("Active");
             }
-            userRepository.save(user);
+            User savedUser = userRepository.save(user);
 
-            System.out.println("Identity persisted to DB (Pending). OTP dispatched to: " + normalizedEmail);
-            emailService.sendEmailVerificationCode(normalizedEmail, otp);
-            
-            return ResponseEntity.ok(new AuthResponse("Identity node staged. Please finalize verification via institutional code.", null));
+            if ("Faculty".equalsIgnoreCase(savedUser.getRole())) {
+                emailService.sendFacultyApplicationEmail(savedUser.getEmail(), savedUser.getName());
+                emailService.notifyAdminOfNewFaculty(savedUser.getName(), savedUser.getEmail());
+                AuthResponse pendingResponse = modelMapper.map(savedUser, AuthResponse.class);
+                pendingResponse.setMessage("Faculty account created and is pending administrative approval.");
+                return ResponseEntity.ok(pendingResponse);
+            }
+
+            emailService.sendWelcomeEmail(savedUser.getEmail(), savedUser.getName());
+            AuthResponse response = modelMapper.map(savedUser, AuthResponse.class);
+            response.setToken(jwtUtil.generateToken(savedUser.getEmail(), savedUser.getRole()));
+            response.setMessage("Registration complete. You are signed in.");
+            return ResponseEntity.ok(response);
             
         } catch (Exception e) {
             System.err.println("Registration Protocol failure: " + e.getMessage());
@@ -139,7 +143,7 @@ public class AuthController {
                 legacyUser.setPassword(passwordEncoder.encode(loginRequest.getPassword()));
                 userRepository.save(legacyUser);
             } else {
-                return ResponseEntity.status(401).build();
+                return ResponseEntity.status(401).body(new AuthResponse("Invalid email or password.", null));
             }
         }
 
@@ -148,7 +152,7 @@ public class AuthController {
         
         if ("Admin".equalsIgnoreCase(user.getRole())) {
             if (!appProperties.getSecurity().getAdminSecret().equals(loginRequest.getSecretCode())) {
-                 return ResponseEntity.status(401).build();
+                 return ResponseEntity.status(401).body(new AuthResponse("Invalid administrator secret code.", null));
             }
         }
         
@@ -158,7 +162,7 @@ public class AuthController {
         }
 
         if (!"Active".equalsIgnoreCase(user.getStatus())) {
-            return ResponseEntity.status(403).build();
+            return ResponseEntity.status(403).body(new AuthResponse("Your account is pending approval. Please contact the administrator.", null));
         }
 
         String token = jwtUtil.generateToken(user.getEmail(), user.getRole());

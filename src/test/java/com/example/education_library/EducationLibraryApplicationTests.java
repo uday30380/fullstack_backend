@@ -108,7 +108,7 @@ class EducationLibraryApplicationTests {
 	@Test
 	void adminUserEndpointsRequireAuthentication() throws Exception {
 		mockMvc.perform(get("/api/auth/users"))
-				.andExpect(status().isForbidden());
+				.andExpect(status().isUnauthorized());
 	}
 
 	@Test
