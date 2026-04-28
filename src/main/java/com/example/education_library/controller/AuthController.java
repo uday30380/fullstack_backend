@@ -28,7 +28,6 @@ import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
 import java.util.stream.Collectors;
@@ -59,21 +58,6 @@ public class AuthController {
     @Autowired
     private ModelMapper modelMapper;
 
-    // Secure memory-resident buffer for scholarly identity nodes currently undergoing multi-factor verification.
-    // This ensures zero pollution of the MySQL repository with unverified or transient registration data.
-    private static class PendingIdentity {
-        RegistrationRequest request;
-        String code;
-        LocalDateTime expiry;
-
-        PendingIdentity(RegistrationRequest request, String code, LocalDateTime expiry) {
-            this.request = request;
-            this.code = code;
-            this.expiry = expiry;
-        }
-    }
-    private final Map<String, PendingIdentity> scholarshipQueue = new java.util.concurrent.ConcurrentHashMap<>();
-
     @PostMapping("/register")
     @Operation(summary = "Establish a new scholastic identity node (Registration)", operationId = "authRegister")
     public ResponseEntity<AuthResponse> register(@RequestBody RegistrationRequest request) {
@@ -84,9 +68,23 @@ public class AuthController {
             if (normalizedEmail == null || normalizedEmail.isBlank()) {
                 return ResponseEntity.badRequest().body(new AuthResponse("Institutional email is required.", null));
             }
-            if (userRepository.findByEmailIgnoreCase(normalizedEmail).isPresent()) {
-                System.out.println("ALERT: Duplicate Identity detected for " + normalizedEmail);
-                return ResponseEntity.status(409).body(new AuthResponse("A scholar with this email already exists in the central repository.", null));
+
+            // Check if user already exists and is Active (fully registered)
+            java.util.Optional<User> existingOpt = userRepository.findByEmailIgnoreCase(normalizedEmail);
+            if (existingOpt.isPresent()) {
+                User existing = existingOpt.get();
+                if ("Active".equalsIgnoreCase(existing.getStatus())) {
+                    System.out.println("ALERT: Duplicate Identity detected for " + normalizedEmail);
+                    return ResponseEntity.status(409).body(new AuthResponse("A scholar with this email already exists in the central repository.", null));
+                }
+                // If Pending, re-send a fresh OTP and update expiry
+                String otp = String.format("%06d", new Random().nextInt(1000000));
+                existing.setEmailVerificationCode(otp);
+                existing.setEmailVerificationCodeExpiry(LocalDateTime.now().plusMinutes(30));
+                userRepository.save(existing);
+                emailService.sendEmailVerificationCode(normalizedEmail, otp);
+                System.out.println("Re-dispatched OTP to pending identity: " + normalizedEmail);
+                return ResponseEntity.ok(new AuthResponse("Identity node staged. Please finalize verification via institutional code.", null));
             }
 
             if ("Faculty".equalsIgnoreCase(request.getRole())) {
@@ -98,14 +96,23 @@ public class AuthController {
                 }
             }
 
-            // Identity verification staging logic
+            // Generate OTP
             String otp = String.format("%06d", new Random().nextInt(1000000));
             LocalDateTime expiry = LocalDateTime.now().plusMinutes(30);
-            
-            // Queue the identity in secure memory buffer instead of MySQL
-            scholarshipQueue.put(normalizedEmail, new PendingIdentity(request, otp, expiry));
-            
-            System.out.println("Identity Buffered (Memory-Resident). Verification Code dispatched to: " + normalizedEmail);
+
+            // Persist user to DB immediately with status=Pending and OTP stored in DB
+            User user = modelMapper.map(request, User.class);
+            user.setEmail(normalizedEmail);
+            user.setPassword(passwordEncoder.encode(request.getPassword()));
+            user.setStatus("Pending");
+            user.setEmailVerificationCode(otp);
+            user.setEmailVerificationCodeExpiry(expiry);
+            if ("Faculty".equalsIgnoreCase(request.getRole()) && request.getFacultyPin() != null) {
+                user.setFacultyPin(request.getFacultyPin().trim());
+            }
+            userRepository.save(user);
+
+            System.out.println("Identity persisted to DB (Pending). OTP dispatched to: " + normalizedEmail);
             emailService.sendEmailVerificationCode(normalizedEmail, otp);
             
             return ResponseEntity.ok(new AuthResponse("Identity node staged. Please finalize verification via institutional code.", null));
@@ -277,37 +284,41 @@ public class AuthController {
             return ResponseEntity.badRequest().build();
         }
 
-        PendingIdentity pending = scholarshipQueue.get(email);
-        if (pending != null && code.equals(pending.code) && pending.expiry.isAfter(LocalDateTime.now())) {
-            RegistrationRequest regReq = pending.request;
-            User user = modelMapper.map(regReq, User.class);
-            user.setEmail(email);
-            user.setPassword(passwordEncoder.encode(regReq.getPassword()));
+        // Look up user from DB (OTP is now stored in DB, not memory)
+        java.util.Optional<User> userOpt = userRepository.findByEmailIgnoreCase(email);
+        if (userOpt.isPresent()) {
+            User user = userOpt.get();
+            if (code.equals(user.getEmailVerificationCode())
+                    && user.getEmailVerificationCodeExpiry() != null
+                    && user.getEmailVerificationCodeExpiry().isAfter(LocalDateTime.now())) {
 
-            if ("Admin".equalsIgnoreCase(user.getRole())) {
-                if (!appProperties.getSecurity().getAdminSecret().equals(regReq.getSecretCode())) {
-                    return ResponseEntity.status(401).body(new AuthResponse("Unauthorized Admission: Admin credentials invalid.", null));
+                // Clear OTP
+                user.setEmailVerificationCode(null);
+                user.setEmailVerificationCodeExpiry(null);
+
+                if ("Admin".equalsIgnoreCase(user.getRole())) {
+                    // For admin registered via UI, secretCode was validated at registration time
+                    user.setStatus("Active");
+                } else if ("Faculty".equalsIgnoreCase(user.getRole())) {
+                    user.setStatus("Pending");
+                    User savedUser = userRepository.save(user);
+                    emailService.sendFacultyApplicationEmail(user.getEmail(), user.getName());
+                    emailService.notifyAdminOfNewFaculty(user.getName(), user.getEmail());
+                    AuthResponse pendingResponse = modelMapper.map(savedUser, AuthResponse.class);
+                    return ResponseEntity.ok(pendingResponse);
+                } else {
+                    user.setStatus("Active");
+                    emailService.sendWelcomeEmail(user.getEmail(), user.getName());
                 }
-                user.setStatus("Active");
-            } else if ("Faculty".equalsIgnoreCase(user.getRole())) {
-                user.setStatus("Pending");
-                emailService.sendFacultyApplicationEmail(user.getEmail(), user.getName());
-                emailService.notifyAdminOfNewFaculty(user.getName(), user.getEmail());
-            } else {
-                user.setStatus("Active");
-                emailService.sendWelcomeEmail(user.getEmail(), user.getName());
-            }
 
-            // Persist to MySQL only after successful identity verification
-            User savedUser = userRepository.save(user);
-            scholarshipQueue.remove(email);
-
-            AuthResponse response = modelMapper.map(savedUser, AuthResponse.class);
-            if ("Active".equalsIgnoreCase(savedUser.getStatus())) {
-                String token = jwtUtil.generateToken(savedUser.getEmail(), savedUser.getRole());
-                response.setToken(token);
+                User savedUser = userRepository.save(user);
+                AuthResponse response = modelMapper.map(savedUser, AuthResponse.class);
+                if ("Active".equalsIgnoreCase(savedUser.getStatus())) {
+                    String token = jwtUtil.generateToken(savedUser.getEmail(), savedUser.getRole());
+                    response.setToken(token);
+                }
+                return ResponseEntity.ok(response);
             }
-            return ResponseEntity.ok(response);
         }
         
         return ResponseEntity.status(400).body(new AuthResponse("Invalid or expired scholastic verification code. Please request a new one.", null));
@@ -318,13 +329,15 @@ public class AuthController {
     public ResponseEntity<AuthResponse> resendVerification(@RequestBody ForgotPasswordRequest request) {
         String email = normalizeEmail(request.getEmail());
         if (email == null) return ResponseEntity.badRequest().build();
-        
-        PendingIdentity pending = scholarshipQueue.get(email);
-        if (pending != null) {
+
+        // Look up pending user from DB
+        java.util.Optional<User> userOpt = userRepository.findByEmailIgnoreCase(email);
+        if (userOpt.isPresent() && !"Active".equalsIgnoreCase(userOpt.get().getStatus())) {
+            User user = userOpt.get();
             String otp = String.format("%06d", new Random().nextInt(1000000));
-            pending.code = otp;
-            pending.expiry = LocalDateTime.now().plusMinutes(30);
-            
+            user.setEmailVerificationCode(otp);
+            user.setEmailVerificationCodeExpiry(LocalDateTime.now().plusMinutes(30));
+            userRepository.save(user);
             emailService.sendEmailVerificationCode(email, otp);
             return ResponseEntity.ok(new AuthResponse("Verification code re-dispatched to " + email, null));
         }
