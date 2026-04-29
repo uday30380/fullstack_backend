@@ -76,6 +76,26 @@ public class AuthController {
                     System.out.println("ALERT: Duplicate Identity detected for " + normalizedEmail);
                     return ResponseEntity.status(409).body(new AuthResponse("A scholar with this email already exists in the central repository.", null));
                 }
+                
+                if (existing.getEmailVerificationCode() != null) {
+                    // They haven't verified their email yet. Resend OTP and let them verify.
+                    String otp = String.format("%06d", new Random().nextInt(1000000));
+                    existing.setEmailVerificationCode(otp);
+                    existing.setEmailVerificationCodeExpiry(LocalDateTime.now().plusMinutes(30));
+                    existing.setName(request.getName());
+                    existing.setPassword(passwordEncoder.encode(request.getPassword()));
+                    existing.setRole(request.getRole());
+                    if ("Faculty".equalsIgnoreCase(request.getRole()) && request.getFacultyPin() != null) {
+                        existing.setFacultyPin(request.getFacultyPin().trim());
+                    }
+                    userRepository.save(existing);
+                    emailService.sendEmailVerificationCode(existing.getEmail(), otp);
+                    
+                    AuthResponse pendingResponse = modelMapper.map(existing, AuthResponse.class);
+                    pendingResponse.setMessage("Identity node initialized. Complete verification to continue.");
+                    return ResponseEntity.ok(pendingResponse);
+                }
+
                 return ResponseEntity.status(403)
                         .body(new AuthResponse("Your account exists but is pending administrative approval.", null));
             }
@@ -97,29 +117,22 @@ public class AuthController {
             User user = modelMapper.map(request, User.class);
             user.setEmail(normalizedEmail);
             user.setPassword(passwordEncoder.encode(request.getPassword()));
-            user.setEmailVerificationCode(null);
-            user.setEmailVerificationCodeExpiry(null);
+            
+            String otp = String.format("%06d", new Random().nextInt(1000000));
+            user.setEmailVerificationCode(otp);
+            user.setEmailVerificationCodeExpiry(LocalDateTime.now().plusMinutes(30));
+            user.setStatus("Pending");
+
             if ("Faculty".equalsIgnoreCase(request.getRole()) && request.getFacultyPin() != null) {
                 user.setFacultyPin(request.getFacultyPin().trim());
-                user.setStatus("Pending");
-            } else {
-                user.setStatus("Active");
             }
+
             User savedUser = userRepository.save(user);
+            emailService.sendEmailVerificationCode(savedUser.getEmail(), otp);
 
-            if ("Faculty".equalsIgnoreCase(savedUser.getRole())) {
-                emailService.sendFacultyApplicationEmail(savedUser.getEmail(), savedUser.getName());
-                emailService.notifyAdminOfNewFaculty(savedUser.getName(), savedUser.getEmail());
-                AuthResponse pendingResponse = modelMapper.map(savedUser, AuthResponse.class);
-                pendingResponse.setMessage("Faculty account created and is pending administrative approval.");
-                return ResponseEntity.ok(pendingResponse);
-            }
-
-            emailService.sendWelcomeEmail(savedUser.getEmail(), savedUser.getName());
-            AuthResponse response = modelMapper.map(savedUser, AuthResponse.class);
-            response.setToken(jwtUtil.generateToken(savedUser.getEmail(), savedUser.getRole()));
-            response.setMessage("Registration complete. You are signed in.");
-            return ResponseEntity.ok(response);
+            AuthResponse pendingResponse = modelMapper.map(savedUser, AuthResponse.class);
+            pendingResponse.setMessage("Identity node initialized. Complete verification to continue.");
+            return ResponseEntity.ok(pendingResponse);
             
         } catch (Exception e) {
             System.err.println("Registration Protocol failure: " + e.getMessage());
@@ -150,18 +163,15 @@ public class AuthController {
         User user = findUserByEmail(normalizedEmail)
                 .orElseThrow(() -> new UsernameNotFoundException("Unexpected data failure during sync."));
         
-        if ("Admin".equalsIgnoreCase(user.getRole())) {
-            if (!appProperties.getSecurity().getAdminSecret().equals(loginRequest.getSecretCode())) {
-                 return ResponseEntity.status(401).body(new AuthResponse("Invalid administrator secret code.", null));
-            }
-        }
-        
         if ("Faculty".equalsIgnoreCase(user.getRole()) && (user.getFacultyPin() == null || user.getFacultyPin().isEmpty())) {
             user.setFacultyPin(String.format("%06d", new Random().nextInt(1000000)));
             userRepository.save(user);
         }
 
         if (!"Active".equalsIgnoreCase(user.getStatus())) {
+            if (user.getEmailVerificationCode() != null) {
+                return ResponseEntity.status(403).body(new AuthResponse("Your email is not verified. Please register again to verify your email.", null));
+            }
             return ResponseEntity.status(403).body(new AuthResponse("Your account is pending approval. Please contact the administrator.", null));
         }
 
