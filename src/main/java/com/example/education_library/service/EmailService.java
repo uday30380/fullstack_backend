@@ -46,7 +46,13 @@ public class EmailService {
         }
 
         if (!isMailConfigured()) {
-            log.warn("Skipping email '{}' because SMTP is not fully configured. Configure spring.mail.host plus valid credentials before expecting delivery.", subject);
+            log.warn("\n==================================================================\n" +
+                     "MAIL SYSTEM OFFLINE / NOT FULLY CONFIGURED\n" +
+                     "Would have sent email to: {}\n" +
+                     "Subject: {}\n" +
+                     "Message Body Preview:\n{}\n" +
+                     "==================================================================",
+                     to, subject, htmlBody.replaceAll("<[^>]*>", "")); // Strip HTML tags for readable console output
             return;
         }
 
