@@ -218,6 +218,22 @@ class EducationLibraryApplicationTests {
 								"idNumber", "STU-001"
 						))))
 				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.message").exists());
+
+		verify(mailSender, times(1)).send(any(MimeMessage.class));
+
+		User student = userRepository.findByEmailIgnoreCase("student.mail@edulib.com").orElseThrow();
+		String code = student.getEmailVerificationCode();
+
+		stubMailSender();
+
+		mockMvc.perform(post("/api/auth/verify-email")
+						.contentType(MediaType.APPLICATION_JSON)
+						.content(objectMapper.writeValueAsString(Map.of(
+								"email", "student.mail@edulib.com",
+								"code", code
+						))))
+				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.token").isString());
 
 		verify(mailSender, times(1)).send(any(MimeMessage.class));
@@ -235,8 +251,7 @@ class EducationLibraryApplicationTests {
 
 		verify(mailSender, times(1)).send(any(MimeMessage.class));
 
-		User student = userRepository.findByEmailIgnoreCase("student.mail@edulib.com").orElseThrow();
-		String token = login(student.getEmail(), "Test@123456");
+		String token = login("student.mail@edulib.com", "Test@123456");
 
 		stubMailSender();
 
