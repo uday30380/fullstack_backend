@@ -170,7 +170,15 @@ public class AuthController {
 
         if (!"Active".equalsIgnoreCase(user.getStatus())) {
             if (user.getEmailVerificationCode() != null) {
-                return ResponseEntity.status(403).body(new AuthResponse("Your email is not verified. Please register again to verify your email.", null));
+                String otp = String.format("%06d", new Random().nextInt(1000000));
+                user.setEmailVerificationCode(otp);
+                user.setEmailVerificationCodeExpiry(LocalDateTime.now().plusMinutes(30));
+                userRepository.save(user);
+                emailService.sendEmailVerificationCode(user.getEmail(), otp);
+                
+                AuthResponse pendingResponse = modelMapper.map(user, AuthResponse.class);
+                pendingResponse.setMessage("Identity node requires verification. A new code has been dispatched.");
+                return ResponseEntity.ok(pendingResponse);
             }
             return ResponseEntity.status(403).body(new AuthResponse("Your account is pending approval. Please contact the administrator.", null));
         }
